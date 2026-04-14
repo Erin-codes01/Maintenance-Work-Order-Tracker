@@ -7,38 +7,43 @@ public class ReportService
     // 1. Technician Summary
     public async Task<List<TechSummary>> TechnicianSummaryAsync(MaintenanceContext db)
     {
-        return await db.Technicians
-            .Select(t => new TechSummary
-            {
-                TechnicianName = t.Name,
-                TotalWorkOrders = t.WorkOrders.Count,
-                AvgHours = t.WorkOrders.Any()
-                    ? t.WorkOrders.Average(w => w.HoursWorked)
-                    : 0,
-
-                AvgDaysToClose = t.WorkOrders
-                    .Where(w => w.CompletionDate != null)
-                    .AsEnumerable()
-                    .Select(w => (w.CompletionDate!.Value - w.RequestDate).TotalDays)
-                    .DefaultIfEmpty(0)
-                    .Average()
-            })
+        var data = await db.Technicians
+            .Include(t => t.WorkOrders)
             .ToListAsync();
+
+        return data.Select(t => new TechSummary
+        {
+            TechnicianName = t.Name,
+            TotalWorkOrders = t.WorkOrders.Count,
+            AvgHours = t.WorkOrders.Any()
+                ? t.WorkOrders.Average(w => w.HoursWorked)
+                : 0,
+
+            AvgDaysToClose = t.WorkOrders
+                .Where(w => w.CompletionDate != null)
+                .Select(w => (w.CompletionDate!.Value - w.RequestDate).TotalDays)
+                .DefaultIfEmpty(0)
+                .Average()
+        }).ToList();
     }
 
     // 2. Status Summary
     public async Task<(List<StatusCount> overall, List<StatusPerTech> perTech)> StatusSummaryAsync(MaintenanceContext db)
     {
-        var overall = await db.WorkOrders
+        var data = await db.WorkOrders
+            .Include(w => w.Technician)
+            .ToListAsync();
+
+        var overall = data
             .GroupBy(w => w.Status)
             .Select(g => new StatusCount
             {
                 Status = g.Key,
                 Count = g.Count()
             })
-            .ToListAsync();
+            .ToList();
 
-        var perTech = await db.WorkOrders
+        var perTech = data
             .GroupBy(w => new { w.Technician!.Name, w.Status })
             .Select(g => new StatusPerTech
             {
@@ -46,7 +51,7 @@ public class ReportService
                 Status = g.Key.Status,
                 Count = g.Count()
             })
-            .ToListAsync();
+            .ToList();
 
         return (overall, perTech);
     }
@@ -54,7 +59,11 @@ public class ReportService
     // 3. Weekly Labor Hours
     public async Task<List<WeeklyHours>> WeeklyLaborAsync(MaintenanceContext db)
     {
-        return await db.WorkOrders
+        var data = await db.WorkOrders
+            .Include(w => w.Technician)
+            .ToListAsync();
+
+        return data
             .GroupBy(w => new
             {
                 w.Technician!.Name,
@@ -66,56 +75,52 @@ public class ReportService
                 Week = g.Key.Week,
                 Hours = g.Sum(x => x.HoursWorked)
             })
-            .ToListAsync();
+            .ToList();
     }
 
     // 4. Top Performer
     public async Task<TopPerf?> TopPerformerAsync(MaintenanceContext db, int minClosed)
     {
-        return await db.WorkOrders
+        var data = await db.WorkOrders
+            .Include(w => w.Technician)
             .Where(w => w.Status == "Closed" && w.CompletionDate != null)
+            .ToListAsync();
+
+        return data
             .GroupBy(w => w.Technician!.Name)
             .Select(g => new TopPerf
             {
                 TechnicianName = g.Key,
                 ClosedCount = g.Count(),
-
                 AvgDays = g
-                    .AsEnumerable()
                     .Select(w => (w.CompletionDate!.Value - w.RequestDate).TotalDays)
                     .Average()
             })
             .Where(x => x.ClosedCount >= minClosed)
             .OrderBy(x => x.AvgDays)
-            .FirstOrDefaultAsync();
+            .FirstOrDefault();
     }
 
     // 5. Bonus Report
     public async Task<BonusResult> BonusAsync(MaintenanceContext db)
     {
-        var busiest = await db.WorkOrders
-            .GroupBy(w => w.RequestDate.DayOfYear / 7)
-            .Select(g => new
-            {
-                Week = g.Key,
-                Count = g.Count()
-            })
-            .OrderByDescending(x => x.Count)
-            .FirstOrDefaultAsync();
+        var data = await db.WorkOrders.ToListAsync();
 
-        
-        var overdue = db.WorkOrders
-            .AsEnumerable()
-            .Count(w =>
-                w.Status == "Open" &&
-                (DateTime.Now - w.RequestDate).TotalDays > 7);
+        var busiest = data
+            .GroupBy(w => w.RequestDate.DayOfYear / 7)
+            .OrderByDescending(g => g.Count())
+            .FirstOrDefault();
+
+        var overdue = data.Count(w =>
+            w.Status == "Open" &&
+            (DateTime.Now - w.RequestDate).TotalDays > 7);
 
         return new BonusResult
         {
             BusiestWeek = busiest != null
-                ? DateTime.Now.AddDays(-(DateTime.Now.DayOfYear - busiest.Week * 7))
+                ? DateTime.Now.AddDays(-(DateTime.Now.DayOfYear - busiest.Key * 7))
                 : null,
-            BusiestClosed = busiest?.Count ?? 0,
+            BusiestClosed = busiest?.Count() ?? 0,
             OverdueCount = overdue
         };
     }
