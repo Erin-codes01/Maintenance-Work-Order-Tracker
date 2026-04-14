@@ -173,6 +173,11 @@ public class MainForm : Form
         SaveFromGrid(gridBonus, "bonus_reports.csv");
     }
 
+    private void InitializeComponent()
+    {
+
+    }
+
     // Helpers
     private static void Save<T>(IEnumerable<T> items, string fileName)
     {
